@@ -29,7 +29,6 @@ pxh> shutdown
 * then on host cp the confs to be usend in docker build:
 ```
 docker cp px4-sitl-16:/root/PX4-Autopilot/build/px4_sitl_default/rootfs/parameters.bson  parameters.bson
-Successfully copied 2.05kB to /home/user/proj/sims/dockersBuild/px4_gazebo_16/parameters
 ```
 
 
