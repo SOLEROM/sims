@@ -1,0 +1,125 @@
+# PX4 SITL (full rcS, simulator module enabled) – PX4 v1.16.0
+FROM ubuntu:22.04 AS px4-sitl-core
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+# --- Base build environment ---
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        sudo \
+        build-essential \
+        cmake \
+        ninja-build \
+        git \
+        wget \
+        curl \
+        lsb-release \
+        python3 \
+        python3-pip \
+        python3-setuptools \
+        python3-numpy \
+        python3-empy \
+        python3-yaml \
+        python3-toml \
+        python3-jinja2 \
+        python3-packaging \
+        python-is-python3 \
+        zip \
+        vim \
+        bash-completion \
+    && rm -rf /var/lib/apt/lists/*
+
+# Nicer bash prompt inside the container
+RUN echo "export PS1='\\w\\$ '" >> /etc/bash.bashrc
+
+WORKDIR /root
+
+# --- Clone PX4 Autopilot v1.16.0 (latest stable) ---
+# https://github.com/PX4/PX4-Autopilot/releases/tag/v1.16.0
+RUN git clone -b "v1.16.0" \
+        --depth 1 \
+        --single-branch \
+        --recurse-submodules \
+        https://github.com/PX4/PX4-Autopilot.git
+
+WORKDIR /root/PX4-Autopilot
+
+# --- Install PX4 dependencies for Ubuntu via official script (sim only, no NuttX) ---
+# This follows the current PX4 recommendation to use Tools/setup/ubuntu.sh:contentReference[oaicite:1]{index=1}
+RUN bash Tools/setup/ubuntu.sh --no-nuttx && \
+    pip3 install --upgrade pip && \
+    pip3 install \
+        pandas \
+        pymavlink
+
+# --- Inject custom parameters into SITL rootfs ---
+# 'parameters' file/dir is expected in the Docker build context
+ENV PARAMS_RELDIR=build/px4_sitl_default/rootfs/eeprom
+RUN mkdir -p $PARAMS_RELDIR
+COPY parameters $PARAMS_RELDIR/parameters
+
+# --- Build PX4 SITL (no run) ---
+RUN LANG=C.UTF-8 LC_ALL=C.UTF-8 DONT_RUN=1 make px4_sitl_default
+
+# --- Prepare runtime rootfs for SITL with full rcS ---
+WORKDIR /root/PX4-Autopilot/build/px4_sitl_default
+
+# Create rootfs and copy upstream POSIX init scripts + airframes
+# We mirror your old layout: run directly from build/.../rootfs
+RUN mkdir -p rootfs/etc && \
+    cp -R /root/PX4-Autopilot/ROMFS/px4fmu_common/init.d-posix rootfs/etc/ && \
+    cp -R /root/PX4-Autopilot/ROMFS/px4fmu_common/init.d rootfs/etc/
+
+# Create minimal init.d-posix directory and our own rcS_nosim
+RUN mkdir -p rootfs/etc/init.d-posix && \
+    printf '#!/bin/sh\n'                                         >  rootfs/etc/init.d-posix/rcS_nosim && \
+    printf 'echo "[rcS_nosim] Minimal startup, no modules autostarted."\n' >> rootfs/etc/init.d-posix/rcS_nosim && \
+    printf 'echo "[rcS_nosim] Use pxh> to start commander, mavlink, sensors, etc."\n' >> rootfs/etc/init.d-posix/rcS_nosim && \
+    printf 'exit 0\n'                                            >> rootfs/etc/init.d-posix/rcS_nosim && \
+    chmod +x rootfs/etc/init.d-posix/rcS_nosim
+
+# Create rcS_full_udp: same as rcS, but simulator uses UDP instead of TCP and runs in background
+RUN cp rootfs/etc/init.d-posix/rcS rootfs/etc/init.d-posix/rcS_full_udp && \
+    # add UDP port variable at the very top (can override with SIM_UDP_PORT env)
+    sed -i '1isimulator_udp_port=${SIM_UDP_PORT:-14560}' rootfs/etc/init.d-posix/rcS_full_udp && \
+    # make simulator use UDP port instead of TCP and background it
+    sed -i 's/simulator start/simulator start -u $simulator_udp_port \&/' rootfs/etc/init.d-posix/rcS_full_udp
+
+# Expose MAVLink UDP port (QGC, etc.)
+EXPOSE 14560/udp
+
+# Default SITL position port (used by PX4)
+ENV SITL_POSITION_PORT=11341
+
+# Runtime working directory: inside rootfs (PX4 expects this style)
+WORKDIR /root/PX4-Autopilot/build/px4_sitl_default/rootfs
+
+# Create runner scripts:
+#   runFull.sh   -> full rcS with default simulator behavior (TCP, foreground)
+#   runSimUDP.sh -> rcS_full_udp (simulator over UDP, backgrounded)
+#   runNoSim.sh  -> rcS_nosim (no simulator)
+#   runBare.sh   -> bare pxh shell (-i)
+
+RUN printf '#!/bin/bash\nset -e\n'\
+'../bin/px4 -i 0\n'\
+> runBare.sh && chmod +x runBare.sh
+
+RUN printf '#!/bin/bash\nset -e\n'\
+'export SITL_POSITION_PORT="${SITL_POSITION_PORT:-11341}"\n'\
+'exec ../bin/px4 -s etc/init.d-posix/rcS_nosim\n' \
+> runNoSim.sh && chmod +x runNoSim.sh
+
+RUN printf '#!/bin/bash\nset -e\n'\
+'export SITL_POSITION_PORT="${SITL_POSITION_PORT:-11341}"\n'\
+'exec ../bin/px4 -s etc/init.d-posix/rcS_full_udp\n' \
+> runSimUDP.sh && chmod +x runSimUDP.sh
+
+RUN printf '#!/bin/bash\nset -e\n'\
+'export SITL_POSITION_PORT="${SITL_POSITION_PORT:-11341}"\n'\
+'exec ../bin/px4 -s etc/init.d-posix/rcS\n' \
+> runFull.sh && chmod +x runFull.sh
+
+# Drop into bash by default
+CMD ["/bin/bash"]

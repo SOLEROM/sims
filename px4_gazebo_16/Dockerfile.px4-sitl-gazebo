@@ -1,0 +1,147 @@
+# PX4 SITL + Gazebo GZ (Harmonic) – PX4 v1.16.0
+FROM ubuntu:22.04 AS px4-sitl-core
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+
+# --- Base build environment (no explicit Gazebo Classic here) ---
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        sudo \
+        build-essential \
+        cmake \
+        ninja-build \
+        git \
+        wget \
+        curl \
+        lsb-release \
+        python3 \
+        python3-pip \
+        python3-setuptools \
+        python3-numpy \
+        python3-empy \
+        python3-yaml \
+        python3-toml \
+        python3-jinja2 \
+        python3-packaging \
+        python-is-python3 \
+        zip \
+        vim \
+        bash-completion  \
+    && rm -rf /var/lib/apt/lists/*
+
+# Nicer bash prompt inside the container
+RUN echo "export PS1='\\w\\$ '" >> /etc/bash.bashrc
+
+WORKDIR /root
+
+# --- Clone PX4 Autopilot v1.16.0 ---
+RUN git clone -b "v1.16.0" \
+        --depth 1 \
+        --single-branch \
+        --recurse-submodules \
+        https://github.com/PX4/PX4-Autopilot.git
+
+WORKDIR /root/PX4-Autopilot
+
+# --- Install PX4 dependencies (Linux, sim, Gazebo GZ via ubuntu.sh) ---
+RUN bash Tools/setup/ubuntu.sh --no-nuttx && \
+    pip3 install --upgrade pip && \
+    pip3 install \
+        pandas \
+        pymavlink
+
+# --- Build PX4 SITL (GZ plugins are built as part of this) ---
+RUN LANG=C.UTF-8 LC_ALL=C.UTF-8 make px4_sitl_default
+
+# --- Inject custom parameters into SITL rootfs ---
+COPY parameters.bson /root/PX4-Autopilot/build/px4_sitl_default/rootfs/parameters.bson
+
+
+# --- Prepare runtime rootfs for SITL with full rcS ---
+WORKDIR /root/PX4-Autopilot/build/px4_sitl_default
+
+# Create rootfs and copy upstream POSIX init scripts + airframes
+RUN mkdir -p rootfs/etc && \
+    cp -R /root/PX4-Autopilot/ROMFS/px4fmu_common/init.d-posix rootfs/etc/ && \
+    cp -R /root/PX4-Autopilot/ROMFS/px4fmu_common/init.d rootfs/etc/
+
+# Create minimal init.d-posix directory and our own rcS_nosim
+RUN mkdir -p rootfs/etc/init.d-posix && \
+    printf '#!/bin/sh\n'                                         >  rootfs/etc/init.d-posix/rcS_nosim && \
+    printf 'echo "[rcS_nosim] Minimal startup, no modules autostarted."\n' >> rootfs/etc/init.d-posix/rcS_nosim && \
+    printf 'echo "[rcS_nosim] Use pxh> to start commander, mavlink, sensors, etc."\n' >> rootfs/etc/init.d-posix/rcS_nosim && \
+    printf 'exit 0\n'                                            >> rootfs/etc/init.d-posix/rcS_nosim && \
+    chmod +x rootfs/etc/init.d-posix/rcS_nosim
+
+# Create rcS_full_udp: same as rcS, but simulator uses UDP instead of TCP and runs in background
+# (Note: this mainly affects the legacy 'simulator' module; GZ uses its own plugins, but we keep this for compatibility.)
+RUN cp rootfs/etc/init.d-posix/rcS rootfs/etc/init.d-posix/rcS_full_udp && \
+    sed -i '1isimulator_udp_port=${SIM_UDP_PORT:-14560}' rootfs/etc/init.d-posix/rcS_full_udp && \
+    sed -i 's/simulator start/simulator start -u $simulator_udp_port \&/' rootfs/etc/init.d-posix/rcS_full_udp
+
+# Expose MAVLink UDP port (e.g. QGC)
+EXPOSE 14560/udp
+
+# Default SITL position port (used by PX4)
+ENV SITL_POSITION_PORT=11341
+
+# Runtime working directory: inside rootfs (PX4 expects this style)
+WORKDIR /root/PX4-Autopilot/build/px4_sitl_default/rootfs
+
+# --- Runner scripts for different modes ---
+
+# Bare pxh shell (no startup scripts)
+RUN printf '#!/bin/bash\nset -e\n'\
+'exec ../bin/px4 -i 0\n'\
+> runBare.sh && chmod +x runBare.sh
+
+# rcS_nosim: no simulator, just PX4 modules you start manually
+RUN printf '#!/bin/bash\nset -e\n'\
+'export SITL_POSITION_PORT="${SITL_POSITION_PORT:-11341}"\n'\
+'unset PX4_SIM_MODEL\n'\
+'exec ../bin/px4 -s etc/init.d-posix/rcS_nosim\n' \
+> runNoSim.sh && chmod +x runNoSim.sh
+
+# rcS_full_udp: simulator over UDP (background), your custom script
+RUN printf '#!/bin/bash\nset -e\n'\
+'export SITL_POSITION_PORT="${SITL_POSITION_PORT:-11341}"\n'\
+'unset PX4_SIM_MODEL\n'\
+'exec ../bin/px4 -s etc/init.d-posix/rcS_full_udp\n' \
+> runSimUDP.sh && chmod +x runSimUDP.sh
+
+# Full stock rcS: default (TCP) mode, listens on TCP 4560 / starting internal SIH
+RUN printf '#!/bin/bash\nset -e\n'\
+'export SITL_POSITION_PORT="${SITL_POSITION_PORT:-11341}"\n'\
+'unset PX4_SIM_MODEL\n'\
+'exec ../bin/px4 -s etc/init.d-posix/rcS\n' \
+> runFull.sh && chmod +x runFull.sh
+
+# --- Gazebo GZ helper script (run from PX4 repo root) ---
+WORKDIR /root/PX4-Autopilot
+RUN printf '#!/bin/bash\nset -e\n'\
+'cd /root/PX4-Autopilot\n'\
+'# If gz_env.sh exists, source it to set GZ_SIM_RESOURCE_PATH, plugins, etc.\n'\
+'if [ -f build/px4_sitl_default/rootfs/gz_env.sh ]; then\n'\
+'  echo "[run_gz_hitl_iris] Sourcing gz_env.sh"\n'\
+'  source build/px4_sitl_default/rootfs/gz_env.sh\n'\
+'fi\n'\
+'echo "[run_gz_hitl_iris] Using GZ binary: $(command -v gz || echo \"gz not found\")"\n'\
+'# Launch Gazebo GZ (Harmonic) with a HITL/SITL Iris-style world.\n'\
+'# Adjust the world path if hitl_iris.sdf is named differently in your tree.\n'\
+'gz sim Tools/simulation/gz/worlds/default.sdf\n'\
+> run_gz_hitl_iris.sh && chmod +x run_gz_hitl_iris.sh
+
+# run 
+RUN printf '#!/bin/bash\nset -e\n'\
+'cd /root/PX4-Autopilot/build/px4_sitl_default/rootfs\n'\
+'export PX4_SIM_MODEL=gz_x500\n'\
+'export SITL_POSITION_PORT="${SITL_POSITION_PORT:-11341}"\n'\
+'../bin/px4 -s etc/init.d-posix/rcS\n' \
+> runGzPX4.sh && chmod +x runGzPX4.sh
+
+
+
+# Default: drop into bash
+CMD ["/bin/bash"]
