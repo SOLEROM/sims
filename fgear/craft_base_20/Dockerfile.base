@@ -1,0 +1,45 @@
+# Dockerfile.fgfs.base
+FROM ubuntu:20.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LC_ALL=C.UTF-8 \
+    LANG=C.UTF-8 \
+    LANGUAGE=C.UTF-8
+
+# Nicer shell prompt
+RUN echo "export PS1='\\w\\$ '" >> /etc/bash.bashrc
+
+# Core dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        software-properties-common \
+        ca-certificates \
+        wget \
+        unzip \
+        tzdata && \
+    rm -rf /var/lib/apt/lists/*
+
+# pull the Mesa GL stack
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libgl1-mesa-dri \
+        libgl1-mesa-glx \
+        mesa-utils \
+        dbus-x11 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install FlightGear (from distro)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        flightgear && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy generic runner from craft_base
+COPY fgfs_runner.sh /usr/local/bin/fgfs_runner.sh
+RUN chmod +x /usr/local/bin/fgfs_runner.sh
+
+# Default working directory (you can mount logs/scenery here if you like)
+WORKDIR /data
+
+# Default command – generic FGFS runner
+CMD ["/usr/local/bin/fgfs_runner.sh"]
