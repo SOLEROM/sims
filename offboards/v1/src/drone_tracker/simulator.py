@@ -128,6 +128,7 @@ class SimulationResult:
     config: SimConfig = None
     controller_name: str = ""
     scenario_name: str = ""
+    scenario_kwargs: dict = None  # Scenario parameters used
     
     # Computed metrics
     metrics: SimulationMetrics = None
@@ -170,6 +171,7 @@ class Simulator:
         controller: str | ControllerBase = "p",
         scenario: str = "circle",
         config: SimConfig = None,
+        scenario_kwargs: dict = None,
         **controller_kwargs,
     ) -> SimulationResult:
         """
@@ -179,12 +181,35 @@ class Simulator:
             controller: Controller name ("p", "pidyaw", "pursuit") or instance
             scenario: Scenario name ("circle", "line", "random", etc.)
             config: Override config for this run
+            scenario_kwargs: Override scenario parameters, e.g.:
+                - circle: {"radius": 8.0, "omega": 0.2, "center": (0, 0)}
+                - line: {"speed": 1.0, "start": (5, 0), "oscillation": 3.0, "osc_freq": 0.5}
+                - figure_eight: {"scale": 6.0, "omega": 0.2, "center": (0, 0)}
+                - stationary: {"position": (10, 5)}
+                - random: {"step": 0.8}
             **controller_kwargs: Override controller parameters
             
         Returns:
             SimulationResult with all data and metrics
+            
+        Examples:
+            # Custom line scenario
+            result = sim.run(
+                controller="p",
+                scenario="line",
+                scenario_kwargs={"speed": 1.2, "oscillation": 3.0}
+            )
+            
+            # Custom circle with custom controller gains
+            result = sim.run(
+                controller="pidyaw",
+                scenario="circle",
+                scenario_kwargs={"radius": 10.0, "omega": 0.1},
+                k_p=2.5, k_i=0.3
+            )
         """
         cfg = config or self.config
+        scenario_kwargs = scenario_kwargs or {}
         
         # Setup
         dt = cfg.dt
@@ -231,10 +256,14 @@ class Simulator:
         # Set random seed
         np.random.seed(cfg.seed)
         
+        # Create scenario config with kwargs
+        from .scenarios import ScenarioConfig
+        scenario_cfg = ScenarioConfig(name=scenario, kwargs=scenario_kwargs)
+        
         # Main loop
         for k in range(steps):
             # Update target
-            target = get_target(scenario, t, target, dt, seed=cfg.seed)
+            target = get_target(scenario_cfg, t, target, dt, seed=cfg.seed)
             
             # Controller update at ctrl_hz
             if t >= next_ctrl_t - 1e-9:
@@ -278,6 +307,7 @@ class Simulator:
             config=cfg,
             controller_name=controller_name,
             scenario_name=scenario,
+            scenario_kwargs=scenario_kwargs,
         )
         
         # Compute metrics
