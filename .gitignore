@@ -209,3 +209,9 @@ __marimo__/
 ##
 offboards/v1/venv_tracker/
 venv_*
+**/local.env
+# PX4 flight logs (bind-mounted by px4/px4_gazebo_16/run.sh)
+/logs/
+# generated FlightGear assets (satellite ortho quad/tiles) — per station,
+# rebuild with fgear/craft_base_24/tools/gen_orthophotos.sh
+fgear/craft_base_24/assets/

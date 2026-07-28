@@ -1,0 +1,43 @@
+# px4-fg — PX4 v1.16 + Gazebo GZ Harmonic (px4 layer used AS-IS) with a
+# FlightGear drone-camera renderer alongside.
+#
+# SINGLE VEHICLE ONLY for now: px4_gazebo_16/run.sh predates the conventions
+# (hardcoded name px4-sitl-16, --net=host), so this profile shares the HOST
+# network instead of per-vehicle anchors (fg-demo shows the multi-vehicle
+# model).
+#
+# The frozen image's CMD is /bin/bash (other px4-sitl images auto-run the sim
+# as its CMD; this one doesn't), so 1_px4 is the container's shell and the
+# 2_pxh tab auto-starts PX4 + gz physics via docker exec (pxh console lives
+# there; Ctrl-C it to stop the sim without losing the container).
+#
+# gz runs HEADLESS by default (PX4's rcS would otherwise also spawn the Gazebo
+# GUI window via `gz sim -g` — physics is the gz SERVER either way); the env is
+# injected at docker exec so the frozen px4 layer stays untouched. Set
+# PX4_HEADLESS=0 for the GUI window (design/px4-fg-gazebo-headless.md).
+#
+# Pose for the renderer: the 5_pose tab (pose_tap.py) bridges PX4's onboard
+# MAVLink stream (UDP 14540) -> fg_protocol UDP 15778 (CONVENTIONS.md §8
+# "pose tap"; design/px4-fg-pose-tap.md) — flying in QGC moves the FG camera.
+# mkdir first: px4 run.sh bind-mounts ./logs — pre-create it as the user, or
+# dockerd tries to mkdir the mount source itself and fails (permission denied)
+px4::mkdir -p logs && ./px4/px4_gazebo_16/run.sh
+pxh::./orch/v1/wait_for.sh container px4-sitl-16 60 && docker exec -it -e HEADLESS=$([ "${PX4_HEADLESS:-1}" != 0 ] && echo 1) px4-sitl-16 ./runGzPX4.sh
+# sensor keepalive: the image's gz-sim (Harmonic 8.14) publishes a sensor
+# only while it sees a subscriber, and PX4's own gz_bridge subscriptions are
+# not counted (upstream regression). Which sensors gate varies per run (mag
+# and IMU observed) — without this tab: missing accel/gyro/compass -> EKF dead
+# -> arming denied. Design note: design/px4-fg-gz-sensor-keepalive.md
+keepalive::./orch/v1/sensor_keepalive.sh
+fgfs::./orch/v1/wait_for.sh container px4-sitl-16 300 && FG_MODE=external-fdm FG_NET=host ./fgear/craft_base_24/run.sh
+# pose tap: physics -> renderer. A DEDICATED mavlink instance (runtime
+# docker exec, UDP 14590->14591 — the stock 14540 link gets its partner
+# stolen by any stray probe, see the design note) streams GLOBAL_POSITION_INT
+# + ATTITUDE, converted into fg_protocol datagrams on UDP 15778. Extra flags
+# (e.g. --north-up, --cam-pitch) go in POSE_TAP_ARGS (local.env).
+# design/px4-fg-pose-tap.md
+pose::./orch/v1/pose_tap.sh
+@once:qgc::${QGC_CMD:-echo "set QGC_CMD (e.g. in orch/v1/local.env) to auto-launch a ground station here"}
+# debug shell: cd runs, then term_tabs' wrapper drops into an interactive bash
+# that inherits the cwd — a ready shell in debug/ for ./px4-health.sh etc.
+@once:debug::cd debug && ls

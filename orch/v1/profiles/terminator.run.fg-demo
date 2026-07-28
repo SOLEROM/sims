@@ -1,0 +1,14 @@
+# fg-demo — self-contained N-vehicle demo: one drone-camera renderer + one
+# circling pose feeder per vehicle. Needs only the fgear layer (fgfs-base:24).
+#
+# Each vehicle gets its own terminator window "agent-<ID>" with numbered tabs
+# (1_fgfs, 2_feed); the @once: tabs join agent-1's window (3_info).
+#
+# Wiring per vehicle (all inside agent-$ID's netns; host reach via the anchor's
+# published ports from fg-demo.env: telnet 1577<ID>, pose-in UDP 1578<ID>):
+#   fgfs (renderer, --fdm=external)  <-UDP 15778-  feed_fdm (fake flight)
+# Verify from anywhere on the host:
+#   python3 fgear/craft_base_24/tools/fg_prop.py --port 15771 get /position/latitude-deg
+fgfs::FG_MODE=external-fdm FG_NET=container:agent-$ID ./fgear/craft_base_24/run.sh
+feed::./orch/v1/wait_for.sh fg-props 1577$ID && python3 ./fgear/craft_base_24/tools/feed_fdm.py --port 1578$ID --lat ${FG_HOME_LAT:-37.613544} --lon ${FG_HOME_LON:--122.357172} --alt-m 60 --circle-m 120 --period-s 40 --duration 0
+@once:info::echo "fg-demo up: N=${NUM_IDS:-1} vehicles. Per vehicle <i>: props telnet on host port 1577<i>, pose UDP in on 1578<i>. Try: python3 fgear/craft_base_24/tools/fg_prop.py --port 15771 get /position/latitude-deg"

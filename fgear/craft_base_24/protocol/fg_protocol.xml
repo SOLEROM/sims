@@ -1,0 +1,92 @@
+<?xml version="1.0"?>
+<!-- fg_protocol — generic-protocol pose INPUT for external-fdm renderer mode.
+
+     One newline-terminated datagram = 9 tab-separated %f fields, applied to the
+     property nodes below in order:
+
+       1 /sim/current-view/pitch-offset-deg   camera pitch (-85 ~= nadir "drone cam")
+       2 /sim/current-view/roll-offset-deg    camera roll
+       3 /orientation/heading-deg             vehicle heading
+       4 /orientation/pitch-deg               vehicle pitch
+       5 /orientation/roll-deg                vehicle roll
+       6 /position/latitude-deg               vehicle latitude
+       7 /position/longitude-deg              vehicle longitude
+       8 /position/altitude-ft                vehicle altitude (FEET, AMSL)
+       9 /sim/current-view/heading-offset-deg view azimuth control (see below)
+
+     FlightGear listens via:
+       fgfs ... -\-generic=socket,in,<hz>,,<port>,udp,fg_protocol
+
+     tools/feed_fdm.py is a reference sender; any pipeline that emits these 9
+     fields (e.g. a MAVLink→FG pose bridge) drives this unchanged.
+
+     Field 9, measured behavior on this FG build: the near-nadir cockpit view
+     obeys screen_up_azimuth = heading - heading_offset (slope -1, verified from
+     /sim/current-view/raw-orientation).
+       heading-up / FPV : send 0            -> window top = vehicle heading
+       north-up         : send heading-TRIM -> window top pinned at azimuth TRIM
+     (An earlier integration sent TRIM-heading — wrong sign — and the view spun
+     at 2x heading. Don't repeat it.) -->
+<PropertyList>
+    <generic>
+        <input>
+            <line_separator>newline</line_separator>
+            <var_separator>tab</var_separator>
+
+            <chunk>
+                <name>/sim/current-view/pitch-offset-deg</name>
+                <node>/sim/current-view/pitch-offset-deg</node>
+                <type>double</type>
+                <format>%f</format>
+            </chunk>
+            <chunk>
+                <name>/sim/current-view/roll-offset-deg</name>
+                <node>/sim/current-view/roll-offset-deg</node>
+                <type>double</type>
+                <format>%f</format>
+            </chunk>
+            <chunk>
+                <name>/orientation/heading-deg</name>
+                <node>/orientation/heading-deg</node>
+                <type>double</type>
+                <format>%f</format>
+            </chunk>
+            <chunk>
+                <name>/orientation/pitch-deg</name>
+                <node>/orientation/pitch-deg</node>
+                <type>double</type>
+                <format>%f</format>
+            </chunk>
+            <chunk>
+                <name>/orientation/roll-deg</name>
+                <node>/orientation/roll-deg</node>
+                <type>double</type>
+                <format>%f</format>
+            </chunk>
+            <chunk>
+                <name>/position/latitude-deg</name>
+                <node>/position/latitude-deg</node>
+                <type>double</type>
+                <format>%f</format>
+            </chunk>
+            <chunk>
+                <name>/position/longitude-deg</name>
+                <node>/position/longitude-deg</node>
+                <type>double</type>
+                <format>%f</format>
+            </chunk>
+            <chunk>
+                <name>/position/altitude-ft</name>
+                <node>/position/altitude-ft</node>
+                <type>double</type>
+                <format>%f</format>
+            </chunk>
+            <chunk>
+                <name>/sim/current-view/heading-offset-deg</name>
+                <node>/sim/current-view/heading-offset-deg</node>
+                <type>double</type>
+                <format>%f</format>
+            </chunk>
+        </input>
+    </generic>
+</PropertyList>

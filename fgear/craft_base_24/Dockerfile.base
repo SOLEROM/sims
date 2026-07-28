@@ -1,0 +1,84 @@
+# Dockerfile.base — generic FlightGear base image (craft_base_24)
+#
+# ubuntu:24.04 + the saiarcot895 FlightGear PPA: the exact combination the
+# render fixes (runtime ortho ground placement, hardware-GL-over-host-X) were
+# verified against. Keep this image PROJECT-AGNOSTIC: no scenery objects, no
+# home coordinates, no AI flightplans. Project specifics live in an OVERLAY
+# image (FROM fgfs-base:24 + COPY your assets) or in runtime bind-mounts
+# (see run.sh FG_ASSETS_DIR).
+#
+# Build args (both optional, both off by default so the base stays lean):
+#   SCENERY_TILES   space-separated 10x10 scenery archives from the ibiblio
+#                   mirror, e.g. "e030n30 e030n20" (Scenery-v2.12).
+#   AIRCRAFT_ZIPS   space-separated aircraft zips from Aircraft-2024,
+#                   e.g. "Rascal jeep".
+# Without scenery FlightGear still runs (ocean + generated terrain) — the
+# external-fdm renderer mode with the built-in ufo aircraft needs nothing else.
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LC_ALL=C.UTF-8 \
+    LANG=C.UTF-8 \
+    LANGUAGE=C.UTF-8 \
+    FG_ROOT_DIR=/usr/share/games/flightgear
+
+RUN echo "export PS1='\\w\\$ '" >> /etc/bash.bashrc
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        software-properties-common \
+        ca-certificates \
+        wget \
+        unzip \
+        tzdata && \
+    add-apt-repository -y ppa:saiarcot895/flightgear && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        flightgear \
+        libgl1-mesa-dri \
+        mesa-utils \
+        dbus-x11 \
+        xvfb \
+        x11-utils \
+        xauth && \
+    rm -rf /var/lib/apt/lists/*
+
+# Optional world scenery tiles (10x10 archives). Kept in one layer per arg so a
+# rebuild with different tiles only redoes this step.
+ARG SCENERY_TILES=""
+RUN set -e; \
+    mkdir -p "$FG_ROOT_DIR/Scenery"; \
+    for t in $SCENERY_TILES; do \
+        echo "[scenery] fetching $t"; \
+        wget -q "http://mirrors.ibiblio.org/flightgear/ftp/Scenery-v2.12/${t}.tgz" -O "/tmp/${t}.tgz"; \
+        tar xzf "/tmp/${t}.tgz" -C "$FG_ROOT_DIR/Scenery"; \
+        rm "/tmp/${t}.tgz"; \
+    done
+
+# Optional extra aircraft (the base fgdata already ships 'ufo' — all the
+# external-fdm renderer mode needs).
+ARG AIRCRAFT_ZIPS=""
+RUN set -e; \
+    for a in $AIRCRAFT_ZIPS; do \
+        echo "[aircraft] fetching $a"; \
+        wget -q "http://mirrors.ibiblio.org/flightgear/ftp/Aircraft-2024/${a}.zip" -O "/tmp/${a}.zip"; \
+        unzip -q -o "/tmp/${a}.zip" -d "$FG_ROOT_DIR/Aircraft"; \
+        rm "/tmp/${a}.zip"; \
+    done
+
+# Generic hooks baked into the image (a project overlay or run.sh bind-mount can
+# override any of them):
+#   fgfs_runner.sh   dual-mode launcher (standalone | external-fdm)
+#   fg_protocol.xml  9-field generic-protocol pose input (UDP)
+#   addobj.nas       runtime object placement + ortho-ground auto-place
+# fgfs lives in /usr/games, which ubuntu leaves off the default PATH
+ENV PATH="${PATH}:/usr/games"
+
+COPY fgfs_runner.sh /usr/local/bin/fgfs_runner.sh
+COPY protocol/fg_protocol.xml $FG_ROOT_DIR/Protocol/fg_protocol.xml
+COPY nasal/addobj.nas $FG_ROOT_DIR/Nasal/addobj.nas
+RUN chmod +x /usr/local/bin/fgfs_runner.sh
+
+WORKDIR /data
+
+CMD ["/usr/local/bin/fgfs_runner.sh"]
